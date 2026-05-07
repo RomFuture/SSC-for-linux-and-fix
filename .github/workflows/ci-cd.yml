@@ -9,15 +9,18 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -39,7 +42,7 @@ jobs:
       package_version: ${{ steps.version.outputs.package_version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Resolve package version
         id: version
@@ -60,7 +63,7 @@ jobs:
         run: bash scripts/build_deb.sh "${{ steps.version.outputs.package_version }}"
 
       - name: Upload deb artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: smart-sniper-czu-deb
           path: build/deb/*.deb
@@ -74,7 +77,7 @@ jobs:
       contents: write
     steps:
       - name: Download deb artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: smart-sniper-czu-deb
           path: dist

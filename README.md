@@ -50,7 +50,7 @@ flowchart LR
 ## Requirements (Linux)
 
 - Python 3.10+
-- Brave Browser (default browser target for Selenium)
+- Brave Browser (required; this build supports Brave-only browser automation)
 - Tkinter package (`python3-tk`)
 - Python dependencies (see `requirements.txt`):
   - `selenium`
@@ -70,6 +70,10 @@ pip install -r requirements.txt
 ```bash
 python3 main.py
 ```
+
+Installed package launch (GUI app, no terminal needed):
+- Open **Smart Sniper CZU** from your desktop application menu, or
+- Run `smart-sniper-czu`
 
 ## Tests
 
@@ -103,6 +107,10 @@ bash scripts/build_deb.sh 0.1.0
 
 Resulting file:
 - `build/deb/smart-sniper-czu_<version>_all.deb`
+
+The Debian package installs:
+- CLI launcher: `/usr/bin/smart-sniper-czu`
+- Desktop entry: `/usr/share/applications/smart-sniper-czu.desktop`
 
 ## Runtime Notes
 

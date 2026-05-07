@@ -11,15 +11,17 @@ STAGE_DIR="${BUILD_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_${PACKAGE_ARCH}"
 INSTALL_DIR="${STAGE_DIR}/opt/${PACKAGE_NAME}"
 DEBIAN_DIR="${STAGE_DIR}/DEBIAN"
 BIN_DIR="${STAGE_DIR}/usr/bin"
+APPS_DIR="${STAGE_DIR}/usr/share/applications"
 
 rm -rf "${STAGE_DIR}"
-mkdir -p "${INSTALL_DIR}" "${DEBIAN_DIR}" "${BIN_DIR}"
+mkdir -p "${INSTALL_DIR}" "${DEBIAN_DIR}" "${BIN_DIR}" "${APPS_DIR}"
 
 cp "${ROOT_DIR}/main.py" "${INSTALL_DIR}/main.py"
 cp "${ROOT_DIR}/uis_sniper_gui.py" "${INSTALL_DIR}/uis_sniper_gui.py"
 cp "${ROOT_DIR}/requirements.txt" "${INSTALL_DIR}/requirements.txt"
 cp "${ROOT_DIR}/README.md" "${INSTALL_DIR}/README.md"
 cp -r "${ROOT_DIR}/smart_sniper" "${INSTALL_DIR}/smart_sniper"
+cp "${ROOT_DIR}/resources/smart-sniper-czu.desktop" "${APPS_DIR}/smart-sniper-czu.desktop"
 
 cat > "${DEBIAN_DIR}/control" <<EOF
 Package: ${PACKAGE_NAME}
@@ -65,6 +67,7 @@ EOF
 
 chmod 0755 "${DEBIAN_DIR}/postinst"
 chmod 0755 "${BIN_DIR}/smart-sniper-czu"
+chmod 0644 "${APPS_DIR}/smart-sniper-czu.desktop"
 
 dpkg-deb --root-owner-group --build "${STAGE_DIR}" "${BUILD_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_${PACKAGE_ARCH}.deb"
 echo "Built package: ${BUILD_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_${PACKAGE_ARCH}.deb"

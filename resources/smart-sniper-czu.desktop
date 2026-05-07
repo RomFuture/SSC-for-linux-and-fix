@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Smart Sniper CZU
+Comment=UIS and Moodle monitoring and booking tool
+Exec=smart-sniper-czu
+Terminal=false
+Categories=Education;Utility;
+StartupNotify=true
+

@@ -2,13 +2,6 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 import threading
 import webbrowser
-import time
-import re
-import json
-import os
-import sys
-import random
-import winsound
 import traceback
 from datetime import datetime
 
@@ -20,30 +13,24 @@ import selenium.webdriver.chrome.options
 import selenium.webdriver.chrome.service
 # -----------------------------------------------------------------------
 
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException, NoSuchElementException, WebDriverException
-from webdriver_manager.chrome import ChromeDriverManager
+from smart_sniper.application.cancellation import CancellationToken
+from smart_sniper.application.dto import (
+    Credentials,
+    EnrolledTermsCommand,
+    TcSniperCommand,
+    UisDogCommand,
+    UisScanCommand,
+    UisSniperCommand,
+)
+from smart_sniper.bootstrap import build_container
+from smart_sniper.domain.target_parser import parse_blacklist, parse_targets
+from smart_sniper.infrastructure.config_store import JsonConfigStore
 
 # --- GLOBÁLNÍ KONFIGURACE ---
 UIS_LOGIN_URL = "https://is.czu.cz/auth/"
 OUTLOOK_URL = "https://outlook.office.com/mail/"
 MOODLE_LOGIN_URL = "https://moodle.czu.cz/login/index.php"
 COFFEE_URL = "https://buymeacoffee.com/colorvant"
-
-def get_config_path():
-    if getattr(sys, 'frozen', False):
-        application_path = os.path.dirname(sys.executable)
-    else:
-        application_path = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(application_path, "smart_sniper_config.json")
-
-CONFIG_FILE = get_config_path()
 
 # --- BARVY (DARK MODE) ---
 COLOR_BG = "#1e1e1e"
@@ -61,18 +48,22 @@ COLOR_INFO = "#4FC3F7"
 # POMOCNÁ TŘÍDA PRO CONFIG
 # =============================================================================
 class ConfigManager:
+    def __init__(self):
+        self.store = JsonConfigStore()
+
     def load(self):
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f: return json.load(f)
-            except: return {}
-        return {}
+        return self.store.load()
+
     def save(self, data):
-        try:
-            existing = self.load()
-            existing.update(data)
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f: json.dump(existing, f, ensure_ascii=False, indent=4)
-        except: pass
+        self.store.save(data)
+
+
+class CallbackLogger:
+    def __init__(self, callback):
+        self.callback = callback
+
+    def log(self, message):
+        self.callback(message)
 
 # =============================================================================
 # TŘÍDA: LAUNCHER (ROZCESTNÍK)
@@ -80,6 +71,7 @@ class ConfigManager:
 class LauncherApp:
     def __init__(self, root):
         self.root = root
+        self.container = build_container(root)
         self.root.title("Smart Sniper - ČZU Tools")
         self.root.geometry("400x500")
         self.root.configure(bg=COLOR_BG)
@@ -107,22 +99,23 @@ class LauncherApp:
 
     def open_uis_sniper(self):
         new_window = tk.Toplevel(self.root)
-        UISSniperApp(new_window)
+        UISSniperApp(new_window, self.container)
 
     def open_tc_sniper(self):
         new_window = tk.Toplevel(self.root)
-        TCSniperApp(new_window)
+        TCSniperApp(new_window, self.container)
 
     def open_enrolled(self):
         new_window = tk.Toplevel(self.root)
-        EnrolledTermsApp(new_window)
+        EnrolledTermsApp(new_window, self.container)
 
 # =============================================================================
 # TŘÍDA: UIS SNIPER
 # =============================================================================
 class UISSniperApp:
-    def __init__(self, root):
+    def __init__(self, root, container):
         self.root = root
+        self.container = container
         self.root.title("UIS Sniper - ČZU Dark Edition (Stable)")
         self.root.geometry("700x980")
         self.root.resizable(True, True)
@@ -131,6 +124,7 @@ class UISSniperApp:
         self.driver = None
         self.is_running = False
         self.thread = None
+        self.cancel_token = None
         
         self.config = ConfigManager()
         self.saved_data = self.config.load()
@@ -167,7 +161,9 @@ class UISSniperApp:
 
         main_canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        main_canvas.bind_all("<MouseWheel>", lambda event: main_canvas.yview_scroll(int(-1*(event.delta/120)), "units"))
+        main_canvas.bind_all("<MouseWheel>", lambda event: main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
+        main_canvas.bind_all("<Button-4>", lambda _event: main_canvas.yview_scroll(-1, "units"))
+        main_canvas.bind_all("<Button-5>", lambda _event: main_canvas.yview_scroll(1, "units"))
 
         content_frame = ttk.Frame(scrollable_frame, padding="15")
         content_frame.pack(fill=tk.BOTH, expand=True)
@@ -396,365 +392,71 @@ class UISSniperApp:
             self.lbl_study_info.config(text=info_text)
         self.root.after(0, _update)
 
-    # --- STABILNÍ SELENIUM METODY ---
-    def init_driver(self):
-        """Vylepšená inicializace driveru pro stabilitu."""
-        options = Options()
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-        
-        # Stability fixy
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--remote-allow-origins=*") 
-        options.add_argument("--disable-gpu")
-        options.add_argument("--ignore-certificate-errors")
-
+    def run_sniper_process(self):
         try:
-            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-            driver.maximize_window()
-            return driver
+            command = UisSniperCommand(
+                credentials=Credentials(
+                    username=self.entry_user.get(),
+                    password=self.entry_pass.get(),
+                ),
+                targets=parse_targets(self.list_targets.get(0, tk.END)),
+                blacklist=parse_blacklist(self.entry_blacklist.get()),
+                use_outlook=self.outlook_mode.get(),
+                cancellation=self.cancel_token,
+            )
+            self.container.run_uis_sniper.execute(
+                command,
+                self,
+                on_target_enrolled=lambda line: self.remove_target_from_gui(line),
+                on_study_info=lambda text: self.update_study_info_ui(text),
+            )
         except Exception as e:
-            self.log(f"CHYBA DRIVERU: {e}")
-            self.root.after(0, lambda: messagebox.showerror("Chyba Driveru", f"Nepodařilo se spustit Chrome Driver.\n\nDetail: {e}"))
-            return None
-    
-    def safe_click(self, element):
-        """Kliknutí s ochranou proti StaleElementReferenceException."""
-        for i in range(3):
-            try:
-                element.click()
-                return True
-            except StaleElementReferenceException:
-                time.sleep(1)
-                continue
-            except Exception:
-                # Zkusit JS click jako fallback
-                try:
-                    self.driver.execute_script("arguments[0].click();", element)
-                    return True
-                except:
-                    return False
-        return False
-
-    def detect_study_info(self, driver):
-        try:
-            try:
-                titulek_elem = WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((By.ID, "titulek"))
-                )
-                full_text = titulek_elem.text
-            except:
-                full_text = driver.find_element(By.TAG_NAME, "body").text
-
-            match = re.search(r"Studium\s*[-–—]?\s*(.+?)(?:,|$|\sobdobí)", full_text, re.IGNORECASE)
-            
-            if match:
-                study_part = match.group(1).strip()
-                study_part = study_part.split('[')[0].split('(')[0].strip()
-                study_part = re.sub(r'\s+', ' ', study_part)
-                self.update_study_info_ui(study_part)
-                self.root.after(0, self.save_config)
-        except Exception:
-            pass
-
-    def login_process(self, driver, user, pwd):
-        self.log("🔵 Přihlašuji do UIS...")
-        driver.get(UIS_LOGIN_URL)
-        time.sleep(2)
-        try: driver.find_element(By.XPATH, "//a[contains(@href, 'lang=cz')]").click(); time.sleep(2)
-        except: pass
-        try: driver.find_element(By.XPATH, "//div[@data-sysid='email']").click()
-        except: pass
-        try:
-            # Vyplnění
-            try:
-                WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "credential_0")))
-                driver.find_element(By.ID, "credential_0").clear()
-                driver.find_element(By.ID, "credential_0").send_keys(user)
-                driver.find_element(By.ID, "credential_1").clear()
-                driver.find_element(By.ID, "credential_1").send_keys(pwd)
-                driver.find_element(By.ID, "credential_1").send_keys(Keys.RETURN)
-            except:
-                self.log("⚠️ Automatické vyplnění selhalo, zkus to ručně.")
-
-            # Čekání na úspěch
-            time.sleep(5)
-            if len(driver.find_elements(By.ID, "credential_1")) > 0:
-                self.log("❗ Přihlášení asi neprošlo. Zkouším čekat na ruční vstup...")
-                # Dáme uživateli čas na ruční fix (např. 2FA)
-                try:
-                    WebDriverWait(driver, 60).until_not(EC.presence_of_element_located((By.ID, "credential_1")))
-                    return True
-                except:
-                    return False
-            return True
-        except: return False
-
-    def navigate_to_exams(self, driver):
-        try:
-            if "moje_studium" not in driver.current_url:
-                try: driver.find_element(By.PARTIAL_LINK_TEXT, "Portál studenta").click(); time.sleep(2)
-                except: 
-                    try: driver.find_element(By.XPATH, "//span[contains(text(), 'Moje studium')]").click(); time.sleep(2)
-                    except: pass
-            
-            self.detect_study_info(driver)
-
-            try: 
-                driver.find_element(By.XPATH, "//span[@data-sysid='prihlasovani-zkousky']/..").click()
-            except:
-                driver.get("https://is.czu.cz/auth/student/terminy_seznam.pl?lang=cz")
-            time.sleep(2)
-            return True
-        except: return False
-
-    def run_sniper_process(self, user, pwd, targets, use_outlook):
-        self.driver = self.init_driver()
-        if not self.driver: 
-            self.root.after(0, self.reset_ui)
-            return
-        
-        try:
-            if not self.login_process(self.driver, user, pwd):
-                self.log("❌ Přihlášení selhalo.")
-                self.driver.quit()
-                self.root.after(0, self.reset_ui)
-                return
-            
-            self.navigate_to_exams(self.driver)
-            uis_handle = self.driver.current_window_handle
-            
-            # --- OUTLOOK SETUP ---
-            active_checking_mode = not use_outlook 
-            
-            if use_outlook:
-                self.driver.switch_to.new_window('tab')
-                self.log("📧 Otevírám Outlook v novém tabu...")
-                self.driver.get(OUTLOOK_URL)
-                outlook_handle = self.driver.current_window_handle
-                self.log("⏳ Čekám na tvé přihlášení do Outlooku (max 2 min)...")
-                try: 
-                    WebDriverWait(self.driver, 120).until(EC.presence_of_element_located((By.XPATH, "//div[@role='tree']")))
-                    self.log("✅ Outlook připraven. Sleduji poštu...")
-                except: 
-                    self.log("❌ Outlook timeout. Konec.")
-                    self.driver.quit()
-                    self.root.after(0, self.reset_ui)
-                    return
-
-            blacklist_val = self.entry_blacklist.get()
-            blacklist = [b.strip() for b in blacklist_val.split(";") if b.strip()]
-            
-            failsafe_counter = 0
-
-            while self.is_running:
-                try:
-                    check_uis = True
-                    
-                    # REŽIM: ČEKÁM NA EMAIL
-                    if use_outlook and not active_checking_mode:
-                        self.driver.switch_to.window(outlook_handle)
-                        found_mail = False
-                        for t in targets:
-                            subj = t["subject"]
-                            xpath = f"//div[@role='option' and contains(@aria-label, 'Unread') and (contains(@aria-label, 'Vypsání termínu') or contains(@aria-label, 'Uvolnění místa')) and contains(@aria-label, '{subj}')]"
-                            if self.driver.find_elements(By.XPATH, xpath):
-                                self.log(f"🚨 MAIL: {subj}! Přepínám do UIS!")
-                                found_mail = True
-                                break
-                        
-                        if found_mail:
-                            active_checking_mode = True
-                            check_uis = True
-                        else:
-                            check_uis = False
-                            time.sleep(5)
-                    
-                    # REŽIM: AKTIVNÍ SKENOVÁNÍ UIS
-                    if check_uis:
-                        if use_outlook: self.driver.switch_to.window(uis_handle)
-                        
-                        # Refresh UIS s kontrolou
-                        try:
-                            self.driver.refresh()
-                            WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.ID, "table_2")))
-                            failsafe_counter = 0
-                        except TimeoutException:
-                            failsafe_counter += 1
-                            self.log("⚠️ Stránka se nenačítá...")
-                            if failsafe_counter > 3:
-                                self.log("♻️ Restartuji navigaci...")
-                                self.navigate_to_exams(self.driver)
-                                failsafe_counter = 0
-                            continue
-                        
-                        # 1. Zjistit, kde jsem přihlášen (table_1)
-                        my_reg_subjects = []
-                        try:
-                            rows1 = self.driver.find_elements(By.XPATH, "//table[@id='table_1']//tbody/tr")
-                            for r in rows1: my_reg_subjects.append(r.text)
-                        except: pass
-                        
-                        # 2. Hledat v table_2
-                        current_targets = self.get_targets() 
-                        target_action_done = False
-
-                        for i, t in enumerate(current_targets):
-                            if not self.is_running: break
-                            subj = t["subject"]
-                            date = t["date"]
-                            filtr = t["filter"]
-                            original_line = t["original_line"]
-                            
-                            xpath = f"//table[@id='table_2']//tr[contains(., '{subj}')]"
-                            if date: xpath += f"[contains(., '{date}')]"
-                            if filtr: xpath += f"[contains(., '{filtr}')]"
-                            
-                            rows = self.driver.find_elements(By.XPATH, xpath)
-                            for row in rows:
-                                try:
-                                    if any(b in row.text for b in blacklist): continue
-                                    
-                                    # PRIORITA SWAP
-                                    already_have_this_subject = any(subj in s for s in my_reg_subjects)
-                                    if already_have_this_subject:
-                                        self.log(f"⚠️ Nalezen lepší termín pro {subj}! Přehlašuji...")
-                                        
-                                        try:
-                                            # Nejprve najdeme řádek v table_1
-                                            row_to_unreg_xpath = f"//table[@id='table_1']//tr[contains(., '{subj}')]"
-                                            try:
-                                                row_to_unreg = self.driver.find_element(By.XPATH, row_to_unreg_xpath)
-                                            except NoSuchElementException:
-                                                self.log(f"⚠️ Nemohu najít řádek pro odhlášení {subj} v table_1.")
-                                                continue
-
-                                            # V řádku hledáme tlačítko
-                                            try:
-                                                unreg_btn = row_to_unreg.find_element(By.XPATH, ".//a[contains(@href, 'odhlasit_ihned=1')]")
-                                            except NoSuchElementException:
-                                                self.log(f"⚠️ Tlačítko 'Odhlásit' nenalezeno u {subj}. Možná je pozdě?")
-                                                continue
-                                            
-                                            self.safe_click(unreg_btn)
-                                            try: self.driver.switch_to.alert.accept()
-                                            except: pass
-                                            
-                                            # Počkáme na reload table_2
-                                            try:
-                                                WebDriverWait(self.driver, 10).until(EC.staleness_of(row))
-                                                WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.ID, "table_2")))
-                                            except: 
-                                                time.sleep(2)
-
-                                            # Znovu najít řádky v table_2 (protože stránka se obnovila)
-                                            rows_new = self.driver.find_elements(By.XPATH, xpath)
-                                            if not rows_new: 
-                                                self.log("⚠️ Po odhlášení termín zmizel (někdo byl rychlejší?), pokračuji...")
-                                                continue
-                                            row = rows_new[0] # Aktualizujeme proměnnou row
-                                            
-                                        except Exception as e:
-                                            self.log(f"❌ Chyba při přehlašování: {e}")
-                                            continue
-
-                                    # ZÁPIS
-                                    # Zkusíme najít tlačítko v (možná nově načteném) řádku
-                                    try:
-                                        btn = row.find_element(By.XPATH, ".//a[contains(@href, 'prihlasit_ihned=1')] | .//span[@data-sysid='small-arrow-right-double']/..")
-                                    except:
-                                        # Fallback, pokud row je stale
-                                        rows_retry = self.driver.find_elements(By.XPATH, xpath)
-                                        if rows_retry:
-                                            row = rows_retry[0]
-                                            btn = row.find_element(By.XPATH, ".//a[contains(@href, 'prihlasit_ihned=1')] | .//span[@data-sysid='small-arrow-right-double']/..")
-                                        else:
-                                            continue
-
-                                    self.log(f"🔥 VOLNO: {subj}! Klikám...")
-                                    
-                                    if self.safe_click(btn):
-                                        try: 
-                                            WebDriverWait(self.driver, 3).until(EC.alert_is_present())
-                                            self.driver.switch_to.alert.accept()
-                                        except: pass
-                                        
-                                        self.log(f"🎉 ZAPSÁNO: {subj}")
-                                        if not use_outlook:
-                                            self.remove_target_from_gui(original_line)
-                                        
-                                        target_action_done = True
-                                        break
-                                except StaleElementReferenceException:
-                                    continue # Prvek zmizel, zkusit další nebo refresh
-                                except Exception as e:
-                                    pass
-
-                            if target_action_done: break 
-                        
-                        if not use_outlook:
-                            time.sleep(random.uniform(3, 8))
-
-                except WebDriverException:
-                    self.log("❌ Prohlížeč byl zřejmě zavřen.")
-                    break
-                except Exception as e:
-                    self.log(f"⚠️ Chyba v cyklu: {e}")
-                    time.sleep(5)
-
-        except Exception as e: 
             self.log(f"CHYBA: {e}")
             traceback.print_exc()
-        finally: 
-            if self.driver: 
-                try: self.driver.quit()
-                except: pass
+        finally:
             self.root.after(0, self.reset_ui)
 
     def start_sniper(self):
         self.is_running = True
+        self.cancel_token = CancellationToken()
         self.btn_start.config(state="disabled")
         self.btn_dog.config(state="disabled")
         self.btn_stop.config(state="normal")
-        self.thread = threading.Thread(target=self.run_sniper_process, args=(self.entry_user.get(), self.entry_pass.get(), self.get_targets(), self.outlook_mode.get()))
+        self.thread = threading.Thread(target=self.run_sniper_process)
         self.thread.daemon = True
         self.thread.start()
     
     def start_scan(self):
         self.btn_scan.config(state="disabled", text="⏳ Načítám...")
-        self.thread = threading.Thread(target=self.scan_process, args=(self.entry_user.get(), self.entry_pass.get())).start()
+        self.thread = threading.Thread(target=self.scan_process)
+        self.thread.daemon = True
+        self.thread.start()
     
-    def scan_process(self, user, pwd):
-        driver = self.init_driver()
-        if not driver:
-            self.root.after(0, lambda: self.btn_scan.config(state="normal", text="🔄 Načíst data z UIS"))
-            return
+    def scan_process(self):
         try:
-            if self.login_process(driver, user, pwd):
-                self.navigate_to_exams(driver)
-                try:
-                    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "table_2")))
-                    rows = driver.find_elements(By.XPATH, "//table[@id='table_2']//tbody/tr")
-                    data_map = {}
-                    all_s = set()
-                    for row in rows:
-                        cells = row.find_elements(By.TAG_NAME, "td")
-                        if len(cells) > 9:
-                            s = cells[4].text.strip()
-                            t = cells[9].text.strip()
-                            if s: 
-                                all_s.add(s)
-                                if t:
-                                    if t not in data_map: data_map[t] = set()
-                                    data_map[t].add(s)
-                    self.scanned_data = {k: sorted(list(v)) for k, v in data_map.items()}
-                    self.all_subjects = sorted(list(all_s))
-                    self.root.after(0, lambda: [self.save_config(), messagebox.showinfo("OK", "Data načtena"), self.update_comboboxes()])
-                except: pass
-        finally: 
-            driver.quit()
+            command = UisScanCommand(
+                credentials=Credentials(
+                    username=self.entry_user.get(),
+                    password=self.entry_pass.get(),
+                )
+            )
+            result = self.container.scan_uis_data.execute(
+                command,
+                self,
+                on_study_info=lambda text: self.update_study_info_ui(text),
+            )
+            if result:
+                self.scanned_data = result.teacher_to_subjects
+                self.all_subjects = result.all_subjects
+                self.root.after(
+                    0,
+                    lambda: [
+                        self.save_config(),
+                        messagebox.showinfo("OK", "Data načtena"),
+                        self.update_comboboxes(),
+                    ],
+                )
+        finally:
             self.root.after(0, lambda: self.btn_scan.config(state="normal", text="🔄 Načíst data z UIS"))
 
     def update_comboboxes(self):
@@ -763,55 +465,31 @@ class UISSniperApp:
 
     def start_dog_mode(self):
         self.is_running = True
+        self.cancel_token = CancellationToken()
         self.btn_dog.config(state="disabled")
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
-        threading.Thread(target=self.run_dog, args=(self.entry_user.get(), self.entry_pass.get(), self.get_targets())).start()
+        threading.Thread(target=self.run_dog, daemon=True).start()
 
-    def run_dog(self, u, p, targets):
-        driver = self.init_driver()
-        if not driver:
-             self.root.after(0, self.reset_ui)
-             return
+    def run_dog(self):
         try:
-            if self.login_process(driver, u, p):
-                self.navigate_to_exams(driver)
-                blacklist_val = self.entry_blacklist.get()
-                blacklist = [b.strip() for b in blacklist_val.split(";") if b.strip()]
-                
-                for t in targets:
-                    if not self.is_running: break
-                    subj = t["subject"]; date = t["date"]; filtr = t["filter"]
-                    self.log(f"Hledám psa pro: {subj}")
-                    xpath = f"//table[@id='table_2']//tr[contains(., '{subj}')]"
-                    if date: xpath += f"[contains(., '{date}')]"
-                    if filtr: xpath += f"[contains(., '{filtr}')]"
-                    
-                    while self.is_running:
-                        found_action = False
-                        rows = driver.find_elements(By.XPATH, xpath)
-                        for row in rows:
-                            if any(b in row.text for b in blacklist): continue
-                            try:
-                                dog = row.find_element(By.XPATH, ".//a[.//span[@data-sysid='terminy-pes'] or .//use[contains(@href, 'glyph1561')]]")
-                                self.log("🐶 Klikám na psa...")
-                                driver.execute_script("arguments[0].click();", dog)
-                                time.sleep(2)
-                                driver.back()
-                                driver.refresh()
-                                try: WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "table_2")))
-                                except: pass
-                                found_action = True
-                                self.log("✅ Pes nastaven.")
-                                break
-                            except: pass
-                        if not found_action: break
-                self.log("Hotovo.")
-        finally: 
-            driver.quit()
+            command = UisDogCommand(
+                credentials=Credentials(
+                    username=self.entry_user.get(),
+                    password=self.entry_pass.get(),
+                ),
+                targets=parse_targets(self.list_targets.get(0, tk.END)),
+                blacklist=parse_blacklist(self.entry_blacklist.get()),
+                cancellation=self.cancel_token,
+            )
+            self.container.run_uis_dog.execute(command, self)
+        finally:
             self.root.after(0, self.reset_ui)
 
-    def stop_sniper(self): self.is_running = False
+    def stop_sniper(self):
+        self.is_running = False
+        if self.cancel_token:
+            self.cancel_token.cancel()
     
     def reset_ui(self):
         self.is_running = False
@@ -824,13 +502,15 @@ class UISSniperApp:
 # TŘÍDA: TC SNIPER (Moodle)
 # =============================================================================
 class TCSniperApp:
-    def __init__(self, root):
+    def __init__(self, root, container):
         self.root = root
+        self.container = container
         self.root.title("TC Sniper - Moodle Dark (Stable)")
         self.root.geometry("500x600")
         self.root.configure(bg=COLOR_BG)
         self.driver = None
         self.is_running = False
+        self.cancel_token = None
         self.config = ConfigManager()
         self.saved_data = self.config.load()
 
@@ -896,6 +576,7 @@ class TCSniperApp:
     
     def run(self):
         self.is_running = True
+        self.cancel_token = CancellationToken()
         self.btn_run.config(state="disabled")
         self.btn_stop.config(state="normal")
         # Save config
@@ -906,300 +587,49 @@ class TCSniperApp:
             "tc_t1": self.e_t1.get(),
             "tc_t2": self.e_t2.get()
         })
-        threading.Thread(target=self.process).start()
+        threading.Thread(target=self.process, daemon=True).start()
 
-    def stop(self): self.is_running = False
-
-    def _matches_date(self, user_input, href_date_str, cell_text):
-        """Porovná uživatelský vstup (např. '24' nebo '24.04.') s datem z odkazu"""
-        user_input = user_input.strip().lower()
-        if not href_date_str:
-            if "." in user_input:
-                return user_input in cell_text.lower()
-            return re.match(r"^0?" + re.escape(user_input) + r"\b", cell_text) is not None
-            
-        y, m, d = href_date_str.split("-")
-        y, m, d = int(y), int(m), int(d)
-        
-        valid_formats = [
-            str(d),
-            f"0{d}" if d < 10 else str(d),
-            f"{d}.{m}.",
-            f"{d:02d}.{m:02d}.",
-            f"{d}.{m}.{y}",
-            f"{d:02d}.{m:02d}.{y}",
-            f"{y}-{m:02d}-{d:02d}"
-        ]
-        return user_input in valid_formats
-
-    def _check_and_book_times(self, driver, time_links, t1, t2):
-        """Pomocná metoda pro kontrolu časů a rezervaci"""
-        found_any_time = False
-        for a in time_links:
-            if not self.is_running: break
-            try:
-                txt = a.get_attribute("textContent").strip()
-                if " - " in txt:
-                    found_any_time = True
-                    ct_str = txt.split(" - ")[0].strip()
-                    ct = datetime.strptime(ct_str, "%H:%M").time()
-                    if t1 <= ct <= t2:
-                        self.log(f"✅ Čas {ct_str} vyhovuje!")
-                        winsound.Beep(1000, 500)
-                        if self.chk_book.get():
-                            self.log("🖱️ Odesílám požadavek na zapsání...")
-                            
-                            # Přejdeme bezpečně na odkaz nebo klikneme na tlačítko
-                            href = a.get_attribute("href")
-                            if href and not href.startswith("javascript"):
-                                driver.get(href)
-                            else:
-                                driver.execute_script("""
-                                    window.confirm = function() { return true; };
-                                    window.alert = function() { return true; };
-                                    if(typeof confirmTC !== 'undefined') { window.confirmTC = function() { return true; }; }
-                                """)
-                                time.sleep(0.2)
-                                driver.execute_script("arguments[0].click();", a)
-                            
-                            # Pokud Moodle hodí potvrzovací obrazovku ("Pokračovat", "Uložit"), odklikneme ji
-                            time.sleep(2.5)
-                            try:
-                                confirm_btns = driver.find_elements(By.XPATH, "//input[@type='submit' or @type='button'] | //button")
-                                for btn in confirm_btns:
-                                    val = (btn.get_attribute("value") or btn.text or "").lower()
-                                    if any(word in val for word in ["ano", "yes", "pokračovat", "continue", "potvrdit", "confirm", "uložit", "save", "rezervovat"]):
-                                        self.log(f"⚠️ Moodle vyžaduje extra potvrzení ('{val}')...")
-                                        driver.execute_script("arguments[0].click();", btn)
-                                        time.sleep(1)
-                                        break
-                            except: pass
-                                
-                            self.log("🎉 Hotovo! Tvá akce byla dokončena.")
-                            self.is_running = False
-                        return True
-            except Exception as e: 
-                pass
-                
-        if found_any_time:
-            self.log(f"❌ Nalezené časy nevyhovují filtru ({t1.strftime('%H:%M')} - {t2.strftime('%H:%M')}).")
-        return False
-
-    def init_driver(self):
-        options = Options()
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--ignore-certificate-errors")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--remote-allow-origins=*") 
-        try:
-            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-            driver.maximize_window()
-            return driver
-        except Exception as e:
-            self.log(f"❌ CHYBA DRIVERU: {e}")
-            self.root.after(0, lambda: messagebox.showerror("Chyba Driveru", f"Nepodařilo se spustit Chrome.\nDetail: {e}"))
-            return None
+    def stop(self):
+        self.is_running = False
+        if self.cancel_token:
+            self.cancel_token.cancel()
 
     def process(self):
-        user = self.saved_data.get("username", "") 
-        
-        url = self.e_url.get().strip()
-        days_raw = self.e_days.get().split(",")
-        days = [d.strip() for d in days_raw if d.strip()]
-        
+        if not self.e_url.get().strip():
+            self.root.after(0, lambda: messagebox.showerror("Chyba", "Vyplň URL testu."))
+            self.root.after(0, lambda: self.btn_run.config(state="normal"))
+            self.root.after(0, lambda: self.btn_stop.config(state="disabled"))
+            self.is_running = False
+            return
         try:
-            t1 = datetime.strptime(self.e_t1.get().strip(), "%H:%M").time()
-            t2 = datetime.strptime(self.e_t2.get().strip(), "%H:%M").time()
+            # Validate time early to preserve previous UX behavior.
+            datetime.strptime(self.e_t1.get().strip(), "%H:%M")
+            datetime.strptime(self.e_t2.get().strip(), "%H:%M")
         except ValueError:
             self.root.after(0, lambda: messagebox.showerror("Chyba", "Špatný formát času! Použij HH:MM (např. 08:00)"))
             self.root.after(0, lambda: self.btn_run.config(state="normal"))
             self.root.after(0, lambda: self.btn_stop.config(state="disabled"))
             self.is_running = False
             return
-        
-        self.log("⏳ Zapínám Chrome prohlížeč (může to chvíli trvat)...")
-        driver = self.init_driver()
-        
-        if not driver:
-            self.root.after(0, lambda: self.btn_run.config(state="normal"))
-            self.root.after(0, lambda: self.btn_stop.config(state="disabled"))
-            self.is_running = False
-            return
 
+        command = TcSniperCommand(
+            credentials=Credentials(
+                username=self.saved_data.get("username", ""),
+                password="",
+            ),
+            tc_url=self.e_url.get().strip(),
+            tc_filter=self.e_tc_filter.get().strip(),
+            days=[d.strip() for d in self.e_days.get().split(",") if d.strip()],
+            start_time=self.e_t1.get().strip(),
+            end_time=self.e_t2.get().strip(),
+            should_book=self.chk_book.get(),
+            cancellation=self.cancel_token,
+        )
         try:
-            self.log("🌐 Jdu na Moodle Login...")
-            driver.get(MOODLE_LOGIN_URL)
-            creds = self.config.load()
-            if "username" in creds:
-                try:
-                    driver.find_element(By.ID, "username").send_keys(creds["username"])
-                except: pass
-            
-            self.log("⏳ Čekám na tvé přihlášení...")
-            
-            for _ in range(90):
-                if not self.is_running: return
-                curr_url = driver.current_url.lower()
-                if "login" not in curr_url and "oauth" not in curr_url and "saml" not in curr_url:
-                    break
-                time.sleep(2)
-                
-            # Pokud na dané stránce už na něco jsme, občas je potřeba nejdřív uvolnit režim úprav
-            try:
-                driver.get(url)
-                change_btn = driver.find_elements(By.XPATH, "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'změnit termín rezervace')] | //button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'změnit termín rezervace')] | //span[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'změnit termín rezervace')]")
-                if change_btn:
-                    self.log("🔄 Detekován již rezervovaný termín! Rozbaluji menu pro změnu...")
-                    driver.execute_script("arguments[0].click();", change_btn[0])
-                    time.sleep(1)
-            except: pass
-                
-            self.log("🚀 Spouštím smyčku hledání...")
-            
-            loop_count = 0
-            while self.is_running:
-                loop_count += 1
-                if loop_count % 15 == 0:
-                    self.log("🔄 Stále kontroluji termíny...")
-
-                try:
-                    driver.get(url)
-                    try:
-                        WebDriverWait(driver, 3).until(EC.presence_of_element_located((By.CSS_SELECTOR, "td.alert")))
-                    except TimeoutException:
-                        pass
-                        
-                    if not self.is_running: break
-                    
-                    # 1. Občas je u zapsaného termínu třeba znovu kliknout na tlačítko Změnit termín rezervace
-                    try:
-                        change_btns = driver.find_elements(By.XPATH, "//span[@data-toggle='collapse']")
-                        for btn in change_btns:
-                            if btn.get_attribute("aria-expanded") == "false":
-                                driver.execute_script("arguments[0].click();", btn)
-                        time.sleep(0.3)
-                    except: pass
-                    
-                    # 2. Zkusíme rovnou najít časy k rezervaci kdekoliv na stránce (ignorujeme div ID a tabulky)
-                    time_links_found = []
-                    # OPRAVA: Moodle používá pro nové rezervace "rezervovat" a pro změnu rezervace "změnit". Hledáme obojí na <a> i <button>.
-                    for lnk in driver.find_elements(By.XPATH, "//a | //button"):
-                        try:
-                            txt = lnk.get_attribute("textContent").strip().lower()
-                            if "rezervovat" in txt or "změnit" in txt:
-                                # Ujistíme se, že to není to hlavní menu tlačítko (Změnit termín rezervace), ale fakt už ten malý časový slot v zelené tabulce
-                                if " - " in txt and len(txt) < 30: 
-                                    time_links_found.append(lnk)
-                        except: pass
-                        
-                    if time_links_found:
-                        booked = self._check_and_book_times(driver, time_links_found, t1, t2)
-                        if booked: break
-                    
-                    # 3. Časy nevidíme, hledáme správný den v kalendáři podle filtru
-                    tc_filter = self.e_tc_filter.get().strip().lower()
-                    target_div_id = None
-                    
-                    if tc_filter:
-                        h3_elements = driver.find_elements(By.TAG_NAME, "h3")
-                        for h3 in h3_elements:
-                            if tc_filter in h3.text.lower():
-                                try:
-                                    href = h3.find_element(By.TAG_NAME, "a").get_attribute("href")
-                                    m = re.search(r"id=(\d+)", href)
-                                    if m:
-                                        target_div_id = f"test{m.group(1)}"
-                                        break
-                                except: pass
-                        
-                        if target_div_id:
-                            cells = driver.find_elements(By.CSS_SELECTOR, f"div#{target_div_id} td.alert.alert-success")
-                        else:
-                            if loop_count == 1: self.log(f"⚠️ Test s názvem '{tc_filter}' nenalezen, hledám ve všech...")
-                            cells = driver.find_elements(By.CSS_SELECTOR, "td.alert.alert-success")
-                    else:
-                        cells = driver.find_elements(By.CSS_SELECTOR, "td.alert.alert-success")
-                    
-                    day_clicked = False
-                    
-                    # Rozdělíme nalezené volné buňky na dny v kalendáři
-                    for cell in cells:
-                        try:
-                            links = cell.find_elements(By.TAG_NAME, "a")
-                            if not links: continue
-                            link = links[0]
-                            txt = link.get_attribute("textContent").strip()
-                            
-                            # Ujistíme se, že to není časová buňka z jiného nezachyceného testu
-                            if "rezervovat" not in txt.lower() and "změnit" not in txt.lower():
-                                href = link.get_attribute("href") or ""
-                                date_match = re.search(r"day=(\d{4}-\d{2}-\d{2})", href)
-                                href_date = date_match.group(1) if date_match else None
-                                
-                                for d in days:
-                                    if self._matches_date(d, href_date, txt):
-                                        self.log(f"📅 Nalezen volný den: {txt[:10]}...! Otevírám detail...")
-                                        
-                                        # Přejdeme na odkaz detailu dne
-                                        if href and not href.startswith("javascript"):
-                                            driver.get(href)
-                                        else:
-                                            driver.execute_script("arguments[0].click();", link)
-                                            
-                                        day_clicked = True
-                                        break
-                        except: pass
-                        if day_clicked: break
-                            
-                    # Pokud se překlikl na den, počkáme, až se stránka prokazatelně načte s časy!
-                    if day_clicked and self.is_running:
-                        self.log("⏳ Čekám na načtení detailu...")
-                        time.sleep(2) # Bezpečnější čekání na celkový reload Moodle
-                        
-                        # Znovu rozbalíme, protože po reloadu jsou panely zavřené
-                        try:
-                            btns = driver.find_elements(By.XPATH, "//span[@data-toggle='collapse']")
-                            for btn in btns:
-                                if btn.get_attribute("aria-expanded") == "false":
-                                    driver.execute_script("arguments[0].click();", btn)
-                            time.sleep(0.5)
-                        except: pass
-                        
-                        time_links_new = []
-                        # Čekáme, dokud se neobjeví slovo "rezervovat" NEBO "změnit"
-                        for _ in range(8):
-                            if not self.is_running: break
-                            
-                            time_links_new = []
-                            for lnk in driver.find_elements(By.XPATH, "//a | //button"):
-                                try:
-                                    txt_lower = (lnk.get_attribute("textContent") or "").lower()
-                                    if ("rezervovat" in txt_lower or "změnit" in txt_lower) and " - " in txt_lower and len(txt_lower) < 30:
-                                        time_links_new.append(lnk)
-                                except: pass
-                            
-                            if time_links_new:
-                                break
-                            time.sleep(0.5)
-                            
-                        if time_links_new:
-                            booked = self._check_and_book_times(driver, time_links_new, t1, t2)
-                            if booked: break
-                        else:
-                            self.log("⚠️ Na detailu dne nevidím žádné časy k rezervaci/změně.")
-                                
-                except Exception as e:
-                    self.log(f"Chyba cyklu: {e}")
-                
-                if self.is_running:
-                    time.sleep(2.5)
-        except Exception as e: 
+            self.container.run_tc_sniper.execute(command, self)
+        except Exception as e:
             self.log(f"Err: {e}")
-        finally: 
-            if driver:
-                try: driver.quit()
-                except: pass
+        finally:
             self.root.after(0, lambda: self.btn_run.config(state="normal"))
             self.root.after(0, lambda: self.btn_stop.config(state="disabled"))
             self.is_running = False
@@ -1208,8 +638,9 @@ class TCSniperApp:
 # TŘÍDA: PŘEHLED ZAPSANÝCH TERMÍNŮ
 # =============================================================================
 class EnrolledTermsApp:
-    def __init__(self, root):
+    def __init__(self, root, container):
         self.root = root
+        self.container = container
         self.root.title("Přehled zapsaných termínů (UIS & Moodle TC)")
         self.root.geometry("850x650")
         self.root.configure(bg=COLOR_BG)
@@ -1269,20 +700,6 @@ class EnrolledTermsApp:
     def log_tc(self, msg):
         self.root.after(0, lambda: [self.txt_tc.insert(tk.END, msg + "\n"), self.txt_tc.see(tk.END)])
 
-    def init_driver(self):
-        options = Options()
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--ignore-certificate-errors")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--remote-allow-origins=*") 
-        try:
-            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-            return driver
-        except Exception as e:
-            self.log_uis(f"❌ CHYBA DRIVERU: {e}")
-            return None
-
     def start_fetch(self):
         self.txt_uis.delete('1.0', tk.END)
         self.txt_tc.delete('1.0', tk.END)
@@ -1297,131 +714,23 @@ class EnrolledTermsApp:
         self.config.save(data)
 
     def fetch_process(self):
-        username = self.e_user.get().strip()
-        password = self.e_pass.get().strip()
-        
-        if not username or not password:
-            self.log_uis("⚠️ Vyplň Login a Heslo nahoře!")
-            self.log_tc("⚠️ Vyplň Login a Heslo nahoře!")
-            return
-            
-        driver = self.init_driver()
-        if not driver: return
-        
         try:
-            # --- UIS ---
-            self.log_uis("🔵 Přihlašuji do UIS...")
-            driver.get(UIS_LOGIN_URL)
-            time.sleep(2)
-            try: driver.find_element(By.XPATH, "//a[contains(@href, 'lang=cz')]").click(); time.sleep(2)
-            except: pass
-            
-            try: driver.find_element(By.XPATH, "//div[@data-sysid='email']").click(); time.sleep(1)
-            except: pass
-            
-            try:
-                user_input = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.ID, "credential_0")))
-                user_input.send_keys(username)
-                pass_input = driver.find_element(By.ID, "credential_1")
-                pass_input.send_keys(password)
-                pass_input.send_keys(Keys.RETURN)
-                time.sleep(4)
-            except Exception as e:
-                self.log_uis(f"❌ Nelze se přihlásit do UIS: {e}")
-                
-            self.log_uis("🧭 Hledám zapsané zkoušky...")
-            try:
-                driver.get("https://is.czu.cz/auth/student/terminy_seznam.pl?lang=cz")
-                WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.ID, "table_1")))
-                rows = driver.find_elements(By.XPATH, "//table[@id='table_1']//tbody/tr")
-                if not rows:
-                    self.log_uis("ℹ️ Nemáš zapsané žádné zkoušky.")
-                else:
-                    self.log_uis(f"✅ Nalezeno termínů: {len(rows)}\n" + "-"*40)
-                    for r in rows:
-                        cells = r.find_elements(By.TAG_NAME, "td")
-                        if len(cells) >= 9:
-                            kod = cells[2].text.strip()
-                            nazev = cells[3].text.strip()
-                            datum_cas = cells[5].text.strip()
-                            mistnost = cells[6].text.strip()
-                            vypsal = cells[8].text.strip()
-                            
-                            # Odstraníme zbytečné odřádkování v datu a čase pro hezčí výpis
-                            datum_cas = " ".join(datum_cas.split())
-                            
-                            self.log_uis(f"📚 {kod} | {nazev}\n📅 {datum_cas}\n🏫 Místnost: {mistnost}\n👨‍🏫 Vyučující: {vypsal}\n" + "-"*40)
-                        elif len(cells) >= 6:
-                            kod = cells[2].text.strip()
-                            nazev = cells[3].text.strip()
-                            datum_cas = cells[5].text.strip()
-                            datum_cas = " ".join(datum_cas.split())
-                            self.log_uis(f"📚 {kod} | {nazev}\n📅 {datum_cas}\n" + "-"*40)
-                        else:
-                            self.log_uis(f"📌 {r.text}\n" + "-"*40)
-            except Exception as e:
-                self.log_uis("⚠️ Tabulka zapsaných zkoušek nenalezena.")
-
-            # --- MOODLE TC ---
-            tc_url = self.saved_data.get("tc_url", "")
-            if not tc_url:
-                self.log_tc("⚠️ Není nastavena URL pro Moodle test.")
-                self.log_tc("👉 Nejdříve spusť TC Sniper a zadej URL testu/kurzu.")
-            else:
-                self.log_tc("🌐 Přihlašuji do Moodle...")
-                driver.get(MOODLE_LOGIN_URL)
-                try:
-                    user_input = WebDriverWait(driver, 3).until(EC.presence_of_element_located((By.ID, "username")))
-                    user_input.send_keys(username)
-                    self.log_tc("❗ Prosím, dokonči ručně přihlášení (MFA)... čekám.")
-                except:
-                    self.log_tc("❗ Nelze automaticky vyplnit jméno, přihlas se ručně... čekám.")
-                
-                for _ in range(60):
-                    curr = driver.current_url.lower()
-                    if "login" not in curr and "oauth" not in curr and "saml" not in curr:
-                        break
-                    time.sleep(1)
-                
-                self.log_tc("🚀 Načítám Moodle přehled testů...")
-                driver.get(tc_url)
-                
-                try:
-                    tables = WebDriverWait(driver, 5).until(EC.presence_of_all_elements_located((By.XPATH, "//h4[contains(text(), 'Vaše rezervované termíny')]/following-sibling::table[1]")))
-                    if tables:
-                        found_any = False
-                        for t in tables:
-                            rows = t.find_elements(By.TAG_NAME, "tr")
-                            if len(rows) > 1:
-                                found_any = True
-                                for r in rows[1:]:
-                                    cells = r.find_elements(By.TAG_NAME, "td")
-                                    if len(cells) >= 4:
-                                        datum = cells[1].text.strip()
-                                        cas = cells[2].text.strip()
-                                        prijdte = cells[3].text.strip()
-                                        stav = cells[4].text.strip() if len(cells) > 4 else ""
-                                        self.log_tc(f"📅 {datum} | 🕒 {cas}\n📌 Stav: {stav}\n👉 Přijďte v: {prijdte}\n" + "-"*35)
-                                    else:
-                                        self.log_tc(f"📌 {r.text}\n" + "-"*35)
-                        if not found_any:
-                            self.log_tc("ℹ️ Nemáš rezervované žádné termíny.")
-                    else:
-                        self.log_tc("ℹ️ Nemáš rezervované žádné termíny.")
-                except Exception as e:
-                    self.log_tc("ℹ️ Žádné rezervované termíny nenalezeny.")
-                    
+            command = EnrolledTermsCommand(
+                credentials=Credentials(
+                    username=self.e_user.get().strip(),
+                    password=self.e_pass.get().strip(),
+                ),
+                tc_url=self.saved_data.get("tc_url", ""),
+            )
+            self.container.fetch_enrolled_terms.execute(
+                command,
+                CallbackLogger(self.log_uis),
+                CallbackLogger(self.log_tc),
+            )
         except Exception as e:
             self.log_uis(f"CHYBA: {e}")
             self.log_tc(f"CHYBA: {e}")
         finally:
-            self.log_uis("🏁 Hotovo.")
-            self.log_tc("🏁 Hotovo.")
-            time.sleep(2)
-            try: driver.quit()
-            except: pass
-            
-            # Po dokončení načítání ulož výsledky, aby tam byly i po restartu
             self.root.after(0, self.save_results)
 
 if __name__ == "__main__":

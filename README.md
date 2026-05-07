@@ -1,86 +1,58 @@
-======================== Smart SNIPER - ČZU TC UPDATE (v2.0) ========================
+# Smart Sniper CZU
 
-Ahoj! 👋
-Díky, že používáš Smart Sniper. Tento balíček kombinuje dva nástroje v jednom: UIS Sniper (na zkoušky) a TC Sniper (na testy v Moodle).
+Smart Sniper объединяет:
+- UIS Sniper (поиск и запись на экзамены),
+- TC Sniper (резервации в Moodle),
+- Enrolled Terms (сводка записанных терминов UIS/Moodle).
 
-🔴 CO TENTO PROGRAM UMÍ?
+## Архитектура
 
-Program se dělí na dvě hlavní části:
+Проект реорганизован в onion-слои:
+- `smart_sniper/domain` — сущности и чистые правила,
+- `smart_sniper/application` — use-cases и порты,
+- `smart_sniper/infrastructure` — Selenium/конфиг/нотификации,
+- `smart_sniper/presentation` — Tkinter UI.
 
-🏛️ ČÁST 1: UIS SNIPER (Zkoušky)
+Точка входа: `main.py` (также можно запускать `uis_sniper_gui.py`).
 
-Má tři režimy lovu:
+## Требования (Linux)
 
-🚀 AKTIVNÍ SNIPER (Výchozí):
-Neustále obnovuje stránku v UIS (v náhodných intervalech) a jakmile se místo uvolní, okamžitě tě přihlásí. Je to nejrychlejší metoda.
+- Python 3.10+
+- Brave Browser (по умолчанию используется Selenium через Brave)
+- Tkinter (`python3-tk`)
+- Пакеты Python:
+  - `selenium`
+  - `webdriver-manager`
 
-📧 OUTLOOK WATCHER (Stealth mód):
-Program se přihlásí do tvého školního Outlooku a tiše čeká. Jakmile ti přijde e-mail "Vypsání termínu" nebo "Uvolnění místa", program se bleskově přepne do UIS a zapíše tě.
-Výhoda: Nezatěžuje UIS neustálým obnovováním.
-Nevýhoda: E-maily mají někdy zpoždění (5-15 min), takže u "horkých" termínů může být pozdě.
+## Запуск
 
-🐶 NASTAVENÍ HLÍDACÍHO PSA:
-Program projde všechny předměty, které jsi zadal, a automaticky u nich v UIS nakliká "Hlídacího psa" (ikonu psa), abys dostal e-mail, až se místo uvolní. Ušetří ti to klikání.
+```bash
+python3 main.py
+```
 
-🎓 ČÁST 2: TC SNIPER (Moodle Testy)
+## CI/CD
 
-Slouží k lovení termínů v Moodle (typicky Testovací centrum PEF, kde se kliká na kalendář).
+- Workflow: `.github/workflows/ci-cd.yml`
+- В CI выполняются:
+  - установка зависимостей,
+  - `pytest -q`,
+  - `python -m compileall .`
+- В CD собирается Debian-пакет через `scripts/build_deb.sh`.
+- На теге формата `v*` workflow публикует `.deb` в GitHub Release.
 
-🛠️ JAK TO POUŽÍVAT?
+Локальная сборка `.deb`:
 
-Po spuštění Smart_Sniper_CZU.exe se otevře Launcher, kde si vybereš nástroj.
+```bash
+bash scripts/build_deb.sh 0.1.0
+```
 
-1. UIS SNIPER (Postup)
+## Поведение и данные
 
-Login: Vyplň svůj Login (x...) a Heslo do UIS. (Ukládá se pouze lokálně).
+- Логика UI сохранена: те же окна, поля и сценарии запуска.
+- Конфиг сохраняется в Linux: `~/.config/smart-sniper-czu/smart_sniper_config.json`.
+- Для Outlook/Moodle вход часто завершается вручную (MFA/SAML/OAuth).
 
-Načtení: Klikni na modré tlačítko "🔄 Načíst data z UIS". Otevře se prohlížeč a načte tvé předměty.
+## Важно
 
-Výběr: Vyber Předmět a Učitele.
-
-Datum: Napiš např. "21.01" nebo nech prázdné pro jakýkoliv termín.
-
-Klikni "⬇️ PŘIDAT DO SEZNAMU".
-
-Priority: Seřaď předměty šipkami ⬆️⬇️ (horní mají přednost).
-
-Blacklist: Zadej, co ignorovat (např. "24.12.; 8:00").
-
-Start:
-
-Pro rychlý zápis: Klikni "🚀 SPUSTIT SNIPER".
-
-Pro Outlook režim: Zaškrtni "📧 Outlook Watcher" a pak spusť.
-
-2. TC SNIPER (Postup)
-
-URL Testu: Jdi v prohlížeči na Moodle stránku s kalendářem testů a zkopíruj URL adresu sem.
-
-Dny: Napiš čísla dní, které chceš hlídat (např. "15, 16" pro 15. a 16. den v měsíci).
-
-Čas: Zadej rozmezí, kdy můžeš (např. 18:00 až 20:00).
-
-Akce: Zaškrtni "Zarezervovat" pro automatický zápis.
-
-Start: Klikni na "START".
-
-Pozor: V otevřeném okně se pravděpodobně budeš muset ručně přihlásit do Moodle.
-
-⚠️ DŮLEŽITÁ UPOZORNĚNÍ
-
-Program potřebuje nainstalovaný Google Chrome.
-
-Po spuštění se otevře okno prohlížeče. NEZAVÍREJ HO, dokud program nepracuje.
-
-V režimu Outlook/Moodle se budeš muset v okně ručně přihlásit (kvůli dvoufázovému ověření).
-
-⚖️ ODPOVĚDNOST
-
-Tento program je pomůcka vytvořená studentem pro studenty. Používání je na vlastní riziko. Autor nenese odpovědnost za případné problémy s účtem (program se ale chová jako běžný uživatel a dodržuje intervaly mezi kliknutími).
-
-☕ LÍBÍ SE TI TO?
-
-Vývoj a údržba zabraly spoustu času a kofeinu. Pokud ti program pomohl zachránit semestr, budu moc rád za pozvání na virtuální kafe!
-👉 https://buymeacoffee.com/colorvant
-
-Díky a hodně štěstí u zkoušek! 🍀
+- Не закрывай окно браузера во время активного снайпера.
+- Использование на свой риск.

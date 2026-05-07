@@ -1,0 +1,2 @@
+"""Smart Sniper package."""
+
